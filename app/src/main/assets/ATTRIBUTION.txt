@@ -1,0 +1,9 @@
+AIRPORT DATA
+OurAirports, downloaded 2026-08-27 and filtered to airports marked as having
+scheduled service. OurAirports data is dedicated to the public domain.
+https://ourairports.com/data/
+
+WORLD MAP DATA
+Natural Earth 1:110m Admin 0 Countries, downloaded 2026-08-27. Natural Earth
+vector and raster map data is in the public domain.
+https://www.naturalearthdata.com/about/terms-of-use/
