@@ -3,21 +3,34 @@ package com.jettrail.app.domain
 import kotlin.math.abs
 import kotlin.math.sqrt
 
-/** Stateful, deterministic processing shared by GNSS recording and Simulation Lab. */
+/** Stateful, deterministic processing shared by live GNSS recording and stored-flight reprocessing. */
 class FlightProcessor(
     private val maxUsableAccuracyM: Double = 250.0,
     private val maxAircraftSpeedMps: Double = 380.0,
     private val maxVerticalSpeedMps: Double = 100.0,
 ) {
-    private var previousAccepted: RawFlightSample? = null
+    private data class AltitudePoint(val timeSeconds: Double, val altitudeM: Double)
 
-    fun reset() { previousAccepted = null }
+    private var previousAccepted: RawFlightSample? = null
+    private var pendingReacquisition: RawFlightSample? = null
+    private val altitudeWindow = ArrayDeque<AltitudePoint>()
+
+    fun reset() {
+        previousAccepted = null
+        pendingReacquisition = null
+        altitudeWindow.clear()
+    }
 
     fun process(raw: RawFlightSample): ProcessedFlightSample {
         val reasons = linkedSetOf<SampleRejection>()
         val hasPosition = raw.latitudeDeg != null || raw.longitudeDeg != null
         if (hasPosition && !GeoMath.isCoordinateValid(raw.latitudeDeg, raw.longitudeDeg)) {
             reasons += SampleRejection.INVALID_COORDINATE
+        }
+        if (GeoMath.isCoordinateValid(raw.latitudeDeg, raw.longitudeDeg) &&
+            !isInsideSupportedEurope(raw.latitudeDeg!!, raw.longitudeDeg!!)
+        ) {
+            reasons += SampleRejection.OUTSIDE_SUPPORTED_REGION
         }
         raw.horizontalAccuracyM?.let {
             if (!it.isFinite() || it < 0.0 || it > maxUsableAccuracyM) reasons += SampleRejection.POOR_ACCURACY
@@ -34,22 +47,71 @@ class FlightProcessor(
 
         var distance: Double? = null
         var verticalSpeed: Double? = null
-        previousAccepted?.takeIf { raw.isNewLocationFix }?.let { previous ->
+        var startsNewSegment = false
+        val validNewPosition = raw.isNewLocationFix &&
+            GeoMath.isCoordinateValid(raw.latitudeDeg, raw.longitudeDeg) &&
+            reasons.isEmpty()
+        val previous = previousAccepted
+        if (validNewPosition && previous == null) {
+            startsNewSegment = true
+        } else if (validNewPosition && previous != null) {
             val dt = elapsedSeconds(previous, raw)
-            if (dt <= 0.0) {
-                reasons += SampleRejection.INVALID_TIME
-            } else {
-                if (GeoMath.isCoordinateValid(previous.latitudeDeg, previous.longitudeDeg) &&
-                    GeoMath.isCoordinateValid(raw.latitudeDeg, raw.longitudeDeg)
-                ) {
-                    distance = GeoMath.distanceM(previous.latitudeDeg!!, previous.longitudeDeg!!, raw.latitudeDeg!!, raw.longitudeDeg!!)
-                    if (distance!! / dt > maxAircraftSpeedMps * 1.15) reasons += SampleRejection.IMPOSSIBLE_POSITION_JUMP
+            when {
+                dt <= 0.0 -> reasons += SampleRejection.INVALID_TIME
+                dt > MAX_CONTIGUOUS_GAP_SECONDS -> {
+                    val pending = pendingReacquisition
+                    if (pending == null) {
+                        // A lone fix after a long outage is not trustworthy enough to bend the route.
+                        pendingReacquisition = raw
+                        reasons += SampleRejection.UNCONFIRMED_REACQUISITION
+                    } else {
+                        val confirmationSeconds = elapsedSeconds(pending, raw)
+                        val confirmationDistance = GeoMath.distanceM(
+                            pending.latitudeDeg!!,
+                            pending.longitudeDeg!!,
+                            raw.latitudeDeg!!,
+                            raw.longitudeDeg!!,
+                        )
+                        val confirmed = confirmationSeconds in MIN_CONFIRMATION_SECONDS..MAX_CONTIGUOUS_GAP_SECONDS &&
+                            confirmationDistance / confirmationSeconds <= maxAircraftSpeedMps * POSITION_SPEED_TOLERANCE &&
+                            pending.horizontalAccuracyM != null && raw.horizontalAccuracyM != null
+                        if (confirmed) {
+                            // Keep an approximate straight-line distance across the outage, but split
+                            // the visible route so it is never presented as a measured track.
+                            distance = GeoMath.distanceM(
+                                previous.latitudeDeg!!,
+                                previous.longitudeDeg!!,
+                                raw.latitudeDeg!!,
+                                raw.longitudeDeg!!,
+                            )
+                            startsNewSegment = true
+                            // Reacquisition begins a new measured segment. Do not derive vertical
+                            // speed from two fixes immediately after an outage.
+                            verticalSpeed = null
+                            pendingReacquisition = null
+                        } else {
+                            pendingReacquisition = raw
+                            reasons += SampleRejection.UNCONFIRMED_REACQUISITION
+                        }
+                    }
                 }
-                if (previous.gpsAltitudeM?.isFinite() == true && raw.gpsAltitudeM?.isFinite() == true) {
-                    verticalSpeed = (raw.gpsAltitudeM - previous.gpsAltitudeM) / dt
-                    if (abs(verticalSpeed!!) > maxVerticalSpeedMps) reasons += SampleRejection.IMPOSSIBLE_ALTITUDE
+                else -> {
+                    pendingReacquisition = null
+                    distance = GeoMath.distanceM(
+                        previous.latitudeDeg!!,
+                        previous.longitudeDeg!!,
+                        raw.latitudeDeg!!,
+                        raw.longitudeDeg!!,
+                    )
+                    if (distance / dt > maxAircraftSpeedMps * POSITION_SPEED_TOLERANCE) {
+                        reasons += SampleRejection.IMPOSSIBLE_POSITION_JUMP
+                    }
+                    verticalSpeed = smoothedVerticalSpeed(raw)
                 }
             }
+        }
+        if (verticalSpeed != null && abs(verticalSpeed) > maxVerticalSpeedMps) {
+            reasons += SampleRejection.IMPOSSIBLE_ALTITUDE
         }
 
         // A GNSS dropout is retained but is not an outlier; it contributes to coverage, not numeric stats.
@@ -61,11 +123,14 @@ class FlightProcessor(
             rejectionReasons = reasons,
             distanceFromPreviousM = distance?.takeIf { accepted },
             verticalSpeedMps = verticalSpeed?.takeIf { accepted },
+            startsNewSegment = startsNewSegment && accepted,
             phase = phase,
             turbulence = TurbulenceClassifier.classify(raw.linearAccelerationRmsMps2),
         )
         if (accepted && raw.isNewLocationFix && GeoMath.isCoordinateValid(raw.latitudeDeg, raw.longitudeDeg)) {
             previousAccepted = raw
+            if (startsNewSegment) altitudeWindow.clear()
+            addAltitudePoint(raw)
         }
         return processed
     }
@@ -80,7 +145,50 @@ class FlightProcessor(
         }
     }
 
+    /** Least-squares altitude trend over a short window, resistant to normal GNSS altitude jitter. */
+    private fun smoothedVerticalSpeed(current: RawFlightSample): Double? {
+        val altitude = current.gpsAltitudeM?.takeIf(Double::isFinite) ?: return null
+        val time = measurementTimeSeconds(current)
+        val points = altitudeWindow
+            .filter { it.timeSeconds >= time - VERTICAL_SPEED_WINDOW_SECONDS && it.timeSeconds < time }
+            .plus(AltitudePoint(time, altitude))
+        if (points.size < 2 || time - points.first().timeSeconds < MIN_VERTICAL_SPEED_SPAN_SECONDS) return null
+
+        val meanTime = points.sumOf { it.timeSeconds } / points.size
+        val meanAltitude = points.sumOf { it.altitudeM } / points.size
+        val denominator = points.sumOf { (it.timeSeconds - meanTime) * (it.timeSeconds - meanTime) }
+        if (denominator <= 0.0) return null
+        return points.sumOf { (it.timeSeconds - meanTime) * (it.altitudeM - meanAltitude) } / denominator
+    }
+
+    private fun addAltitudePoint(sample: RawFlightSample) {
+        val altitude = sample.gpsAltitudeM?.takeIf(Double::isFinite) ?: return
+        val time = measurementTimeSeconds(sample)
+        while (altitudeWindow.isNotEmpty() && altitudeWindow.first().timeSeconds < time - VERTICAL_SPEED_WINDOW_SECONDS) {
+            altitudeWindow.removeFirst()
+        }
+        altitudeWindow.addLast(AltitudePoint(time, altitude))
+    }
+
+    private fun measurementTimeSeconds(sample: RawFlightSample): Double =
+        sample.locationElapsedRealtimeNanos?.div(1_000_000_000.0) ?: sample.timestampMillis / 1000.0
+
+    private fun isInsideSupportedEurope(latitude: Double, longitude: Double): Boolean =
+        latitude in EUROPE_MIN_LAT..EUROPE_MAX_LAT && longitude in EUROPE_MIN_LON..EUROPE_MAX_LON
+
     fun processAll(samples: Iterable<RawFlightSample>): List<ProcessedFlightSample> = samples.map(::process)
+
+    companion object {
+        private const val POSITION_SPEED_TOLERANCE = 1.15
+        private const val MAX_CONTIGUOUS_GAP_SECONDS = 15.0
+        private const val MIN_CONFIRMATION_SECONDS = 0.2
+        private const val VERTICAL_SPEED_WINDOW_SECONDS = 20.0
+        private const val MIN_VERTICAL_SPEED_SPAN_SECONDS = 5.0
+        private const val EUROPE_MIN_LAT = 25.0
+        private const val EUROPE_MAX_LAT = 75.0
+        private const val EUROPE_MIN_LON = -30.0
+        private const val EUROPE_MAX_LON = 60.0
+    }
 }
 
 object TurbulenceClassifier {

@@ -19,8 +19,9 @@ class AirportAndGameTest {
         val raw = listOf(
             RawFlightSample(0, bru.latitudeDeg, bru.longitudeDeg, 0.0, 0.0, 50.0, 5.0),
             RawFlightSample(1_000_000, lhr.latitudeDeg, lhr.longitudeDeg, 0.0, 0.0, 50.0, 5.0),
+            RawFlightSample(1_001_000, lhr.latitudeDeg + .0001, lhr.longitudeDeg + .0001, 0.0, 0.0, 50.0, 5.0),
         )
-        // A large time gap keeps the commercial route under the implied-speed threshold.
+        // The first fix after a long gap is tentative; a nearby second fix confirms it.
         val route = AirportInferenceEngine.inferRoute(FlightProcessor().processAll(raw), listOf(bru, lhr))
         assertEquals("EBBR", route.first.airport?.ident)
         assertEquals("EGLL", route.second.airport?.ident)

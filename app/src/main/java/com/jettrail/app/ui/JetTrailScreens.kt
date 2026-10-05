@@ -24,13 +24,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -162,37 +159,17 @@ private fun SignalPanel(state: LiveUiState, modifier: Modifier) {
             InfoRow("Reported accuracy", state.accuracyMetres?.let { "±$it m" } ?: "Unavailable", state.accuracyMetres != null)
             InfoRow("Longest dropout", state.longestDropout, state.longestDropout == "None")
             InfoRow("Sample interval", if (state.isRecording) "1 second" else "Inactive", state.isRecording)
-            Text("Coverage is computed from accepted GNSS samples. Impossible readings are retained raw but excluded from visible statistics.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Coverage is computed from fresh confirmed GNSS fixes. Impossible readings are retained raw but excluded from visible statistics.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
 private fun LiveStatsPanel(state: LiveUiState) {
-    BoxWithConstraints {
-        val expanded = maxWidth >= 720.dp
-        val values = listOf(
-            state.averageSpeed to "CURRENT SPEED",
-            state.maxSpeed to "TOP SPEED",
-            state.maxAltitude to "MAX GPS ALT",
-            state.acceptedSamples.toString() to "GOOD SAMPLES",
-        )
-        if (expanded) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                values.forEach { (value, label) -> MiniMetric(value, label, Modifier.weight(1f)) }
-            }
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniMetric(values[0].first, values[0].second, Modifier.weight(1f))
-                    MiniMetric(values[1].first, values[1].second, Modifier.weight(1f))
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    MiniMetric(values[2].first, values[2].second, Modifier.weight(1f))
-                    MiniMetric(values[3].first, values[3].second, Modifier.weight(1f))
-                }
-            }
-        }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        MiniMetric(state.maxSpeed, "TOP SPEED", Modifier.weight(1f))
+        MiniMetric(state.maxAltitude, "MAX GPS ALT", Modifier.weight(1f))
+        MiniMetric(state.acceptedSamples.toString(), "GOOD FIXES", Modifier.weight(1f))
     }
 }
 
@@ -238,7 +215,7 @@ private fun SamplePanel(state: LiveUiState, modifier: Modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(13.dp)) {
             Eyebrow("Processing pipeline")
             InfoRow("Raw samples retained", state.rawSamples.toString(), true)
-            InfoRow("Accepted for statistics", state.acceptedSamples.toString(), true)
+            InfoRow("Confirmed GNSS fixes", state.acceptedSamples.toString(), true)
             InfoRow("Rejected as outliers", state.rejectedSamples.toString(), false)
             Text("Measured values come from device sensors. Estimated values are explicitly labelled throughout the logbook.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -258,24 +235,18 @@ private fun InfoRow(label: String, value: String, positive: Boolean, estimated: 
 
 @Composable
 fun LogbookScreen(flights: List<FlightSummary>, selected: FlightSummary?, onSelect: (FlightSummary) -> Unit, onBack: () -> Unit, onCorrect: (Long, String?, String?) -> Unit, onDelete: (Long) -> Unit) {
-    val realFlights = flights.filterNot { it.isSimulation }
-    val labRuns = flights.filter { it.isSimulation }
     if (selected != null) FlightDetailScreen(selected, onBack, onCorrect, onDelete) else LazyColumn(
         Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)
     ) {
-        item { ScreenHeader("Local history", "Flight logbook", "${realFlights.size} real flights • ${labRuns.size} test runs • stored only on this device") }
+        item { ScreenHeader("Local history", "Flight logbook", "${flights.size} flights • stored only on this device") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                MiniMetric("${realFlights.size}", "REAL FLIGHTS", Modifier.weight(1f)); MiniMetric("${realFlights.sumOf { it.distanceKm }}", "REAL KM", Modifier.weight(1f)); MiniMetric("${realFlights.maxOfOrNull { it.maxSpeedKmh } ?: 0}", "REAL TOP KM/H", Modifier.weight(1f))
+                MiniMetric("${flights.size}", "FLIGHTS", Modifier.weight(1f)); MiniMetric("${flights.sumOf { it.distanceKm }}", "TOTAL KM", Modifier.weight(1f)); MiniMetric("${flights.maxOfOrNull { it.maxSpeedKmh } ?: 0}", "TOP KM/H", Modifier.weight(1f))
             }
         }
-        item { Eyebrow("Real flights") }
-        if (realFlights.isEmpty()) item { Text("No real flights recorded yet.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(realFlights, key = { it.id }) { flight -> FlightRow(flight) { onSelect(flight) } }
-        if (labRuns.isNotEmpty()) {
-            item { Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { Eyebrow("Simulation Lab runs", MaterialTheme.colorScheme.tertiary); Text("Test data only — excluded from totals, XP, badges and personal records.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) } }
-            items(labRuns, key = { it.id }) { flight -> FlightRow(flight) { onSelect(flight) } }
-        }
+        item { Eyebrow("Flights") }
+        if (flights.isEmpty()) item { Text("No flights recorded yet.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        items(flights, key = { it.id }) { flight -> FlightRow(flight) { onSelect(flight) } }
     }
 }
 
@@ -299,7 +270,7 @@ private fun FlightRow(flight: FlightSummary, onClick: () -> Unit) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text("${f.origin}  →  ${f.destination}", style = MaterialTheme.typography.titleLarge)
-            StatusPill(if (f.isSimulation) "TEST RUN" else "${f.qualityPercent}% DATA", !f.isSimulation && f.qualityPercent >= 85)
+            StatusPill("${f.qualityPercent}% DATA", f.qualityPercent >= 85)
         }
         Text(f.date, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -331,7 +302,7 @@ fun FlightDetailScreen(flight: FlightSummary, onBack: () -> Unit, onCorrect: (Lo
     )
     if (confirmingDelete) androidx.compose.material3.AlertDialog(
         onDismissRequest = { confirmingDelete = false },
-        title = { Text(if (flight.isSimulation) "Delete test run?" else "Delete flight?") },
+        title = { Text("Delete flight?") },
         text = { Text("This permanently removes the session and all of its locally stored raw samples.") },
         confirmButton = { TextButton(onClick = { onDelete(flight.id); confirmingDelete = false; onBack() }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") } },
@@ -339,7 +310,7 @@ fun FlightDetailScreen(flight: FlightSummary, onBack: () -> Unit, onCorrect: (Lo
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("←  LOGBOOK", style = MaterialTheme.typography.labelLarge) }
-            ScreenHeader(if (flight.isSimulation) "SIMULATION LAB • ${flight.date}" else flight.date, "${flight.origin}  →  ${flight.destination}", "${flight.duration} • ${flight.distanceKm} km • ${flight.phases}") { StatusPill(if (flight.isSimulation) "TEST DATA" else "${flight.qualityPercent}% QUALITY", !flight.isSimulation && flight.qualityPercent >= 85) }
+            ScreenHeader(flight.date, "${flight.origin}  →  ${flight.destination}", "${flight.duration} • ${flight.distanceKm} km • ${flight.phases}") { StatusPill("${flight.qualityPercent}% QUALITY", flight.qualityPercent >= 85) }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TextButton(onClick = { correcting = true }, contentPadding = PaddingValues(0.dp)) { Text("Correct airports") }
                 TextButton(onClick = { confirmingDelete = true }, contentPadding = PaddingValues(0.dp)) { Text("Delete", color = MaterialTheme.colorScheme.error) }
@@ -387,51 +358,11 @@ fun ExplorerScreen(state: ExplorerUiState) {
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
-        item { JetCard(Modifier.fillMaxWidth()) { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { Eyebrow("Personal records"); InfoRow("Longest real flight", "${state.longestDistanceKm} km", state.flights > 0); InfoRow("Highest ground speed", "${state.highestGroundSpeedKmh} km/h", state.flights > 0); InfoRow("Highest GPS altitude", "${state.highestGpsAltitudeM} m", state.flights > 0); InfoRow("Best GNSS coverage", "${state.bestGnssCoveragePercent}%", state.flights > 0); Text("Only completed real flights are included. Simulation Lab data never affects these records.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+        item { JetCard(Modifier.fillMaxWidth()) { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { Eyebrow("Personal records"); InfoRow("Longest flight", "${state.longestDistanceKm} km", state.flights > 0); InfoRow("Highest ground speed", "${state.highestGroundSpeedKmh} km/h", state.flights > 0); InfoRow("Highest GPS altitude", "${state.highestGpsAltitudeM} m", state.flights > 0); InfoRow("Best GNSS coverage", "${state.bestGnssCoveragePercent}%", state.flights > 0); Text("Only completed flights are included.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
     }
 }
 
 @Composable private fun BadgeCard(badge: BadgeUi, modifier: Modifier) {
     val tint = if (badge.unlocked) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
     JetCard(modifier) { Column(verticalArrangement = Arrangement.spacedBy(9.dp)) { Box(Modifier.size(42.dp).background(tint.copy(alpha = .13f), CircleShape), contentAlignment = Alignment.Center) { Text(badge.glyph, style = MaterialTheme.typography.labelLarge, color = tint) }; Text(badge.name, style = MaterialTheme.typography.titleMedium, color = if (badge.unlocked) MaterialTheme.colorScheme.onSurface else tint); Text(badge.description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Eyebrow(if (badge.unlocked) "Unlocked" else "Locked", tint) } }
-}
-
-@Composable
-fun SimulationLabScreen(running: Boolean, progress: Float, onStart: (Float, Boolean, Boolean) -> Unit, onStop: () -> Unit) {
-    var compression by remember { mutableFloatStateOf(60f) }
-    var dropouts by remember { mutableStateOf(true) }
-    var outliers by remember { mutableStateOf(true) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { ScreenHeader("At-home test tool", "Simulation Lab", "Check JetTrail without boarding an aircraft") { StatusPill(if (running) "TEST RUNNING" else "READY", running) } }
-        item { WarningBanner("This is not a real flight", "It generates a fake European route and sensor readings to test maps, charts, dropouts and outlier filtering. Test runs are stored in their own Logbook section and never count toward real totals, XP, badges or records.") }
-        item {
-            JetCard(Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Eyebrow("European test route")
-                    Text("Brussels → London", style = MaterialTheme.typography.titleLarge)
-                    Text("A synthetic 30-minute profile: taxi, takeoff, noisy climb, cruise, GNSS loss, optional impossible readings, descent and landing. It runs faster than real time.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    SettingSwitch("Inject GNSS dropouts", "Tests gaps and coverage scoring", dropouts) { dropouts = it }
-                    SettingSwitch("Inject impossible outliers", "Tests raw retention and visible filtering", outliers) { outliers = it }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Compression", style = MaterialTheme.typography.bodyMedium); Text("${compression.toInt()}×", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
-                    Slider(value = compression, onValueChange = { compression = it }, valueRange = 15f..120f, steps = 6, enabled = !running)
-                    Text("At ${compression.toInt()}×, the test takes about ${(30.0 / compression).coerceAtLeast(.25).let { String.format(java.util.Locale.US, "%.1f", it) }} minutes.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (running) {
-                        QualityBar((progress * 100).toInt())
-                        OutlinedButton(onClick = onStop, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("STOP SIMULATION", style = MaterialTheme.typography.labelLarge) }
-                    } else Button(onClick = { onStart(compression, dropouts, outliers) }, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("RUN SYNTHETIC FLIGHT", style = MaterialTheme.typography.labelLarge) }
-                }
-            }
-        }
-        item {
-            JetCard(Modifier.fillMaxWidth()) { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Eyebrow("What it verifies"); CheckRow("Ascent / cruise / descent detection", true); CheckRow("High-speed statistics", true); CheckRow("GNSS gaps and coverage scoring", dropouts); CheckRow("Raw outlier retention and filtering", outliers); CheckRow("Room persistence and Logbook charts", true); Text("This test validates the processing and UI pipeline. It does not pretend to validate real antenna reception or Android's real location service.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        }
-    }
-}
-
-@Composable private fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleMedium); Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked = checked, onCheckedChange = onChecked) }
-}
-
-@Composable private fun CheckRow(label: String, active: Boolean) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) { Box(Modifier.size(22.dp).background((if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = .15f), CircleShape), contentAlignment = Alignment.Center) { Text(if (active) "✓" else "·", color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }; Text(label, style = MaterialTheme.typography.bodyMedium) }
 }

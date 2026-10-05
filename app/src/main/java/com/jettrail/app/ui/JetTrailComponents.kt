@@ -180,13 +180,23 @@ fun OfflineRouteMap(route: List<TrackPoint>, modifier: Modifier = Modifier, comp
             drawPath(path, border, style = Stroke(if (compact) .8f else 1.4f))
         }
         if (route.size > 1) {
-            val routePath = Path()
+            val routePaths = mutableListOf<Path>()
+            var routePath: Path? = null
             route.forEachIndexed { index, point ->
                 val p = project(point.longitude, point.latitude)
-                if (index == 0) routePath.moveTo(p.x, p.y) else routePath.lineTo(p.x, p.y)
+                if (index == 0 || point.startsNewSegment || routePath == null) {
+                    routePath = Path().also {
+                        it.moveTo(p.x, p.y)
+                        routePaths += it
+                    }
+                } else {
+                    routePath?.lineTo(p.x, p.y)
+                }
             }
-            drawPath(routePath, Color.Black.copy(alpha = .45f), style = Stroke(if (compact) 7f else 10f, cap = StrokeCap.Round))
-            drawPath(routePath, primary, style = Stroke(if (compact) 3f else 4.5f, cap = StrokeCap.Round))
+            routePaths.forEach { path ->
+                drawPath(path, Color.Black.copy(alpha = .45f), style = Stroke(if (compact) 7f else 10f, cap = StrokeCap.Round))
+                drawPath(path, primary, style = Stroke(if (compact) 3f else 4.5f, cap = StrokeCap.Round))
+            }
             val first = project(route.first().longitude, route.first().latitude)
             val last = project(route.last().longitude, route.last().latitude)
             drawCircle(water, if (compact) 7f else 10f, first); drawCircle(primary, if (compact) 4f else 6f, first)
@@ -204,25 +214,41 @@ fun OfflineRouteMap(route: List<TrackPoint>, modifier: Modifier = Modifier, comp
 }
 
 @Composable
-fun MetricChart(series: List<Float>, label: String, unit: String, color: Color, modifier: Modifier = Modifier) {
+fun MetricChart(series: List<Float?>, label: String, unit: String, color: Color, modifier: Modifier = Modifier) {
     JetCard(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val validValues = series.mapNotNull { it }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
                 Column { Eyebrow(label, color); Text("PROFILE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                Text("${series.maxOrNull()?.toInt() ?: 0} $unit", style = MaterialTheme.typography.titleMedium)
+                Text("${validValues.maxOrNull()?.toInt() ?: 0} $unit", style = MaterialTheme.typography.titleMedium)
             }
             val grid = MaterialTheme.colorScheme.onSurface.copy(alpha = .08f)
             Canvas(Modifier.fillMaxWidth().height(130.dp)) {
                 repeat(4) { i -> drawLine(grid, Offset(0f, size.height * i / 3f), Offset(size.width, size.height * i / 3f), 1f) }
-                if (series.size > 1) {
-                    val high = max(1f, series.maxOrNull() ?: 1f)
-                    val p = Path()
-                    series.forEachIndexed { i, v ->
-                        val x = size.width * i / (series.size - 1)
-                        val y = size.height - (v / high * size.height * .9f)
-                        if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+                if (series.size > 1 && validValues.isNotEmpty()) {
+                    val high = max(1f, validValues.maxOrNull() ?: 1f)
+                    var path: Path? = null
+                    var pointsInPath = 0
+                    fun flushPath() {
+                        val completed = path
+                        if (completed != null && pointsInPath > 1) {
+                            drawPath(completed, color, style = Stroke(4f, cap = StrokeCap.Round))
+                        }
+                        path = null
+                        pointsInPath = 0
                     }
-                    drawPath(p, color, style = Stroke(4f, cap = StrokeCap.Round))
+                    series.forEachIndexed { i, v ->
+                        if (v == null || !v.isFinite()) {
+                            flushPath()
+                        } else {
+                            val x = size.width * i / (series.size - 1)
+                            val y = size.height - (v / high * size.height * .9f)
+                            val activePath = path ?: Path().also { path = it }
+                            if (pointsInPath == 0) activePath.moveTo(x, y) else activePath.lineTo(x, y)
+                            pointsInPath++
+                        }
+                    }
+                    flushPath()
                 }
             }
         }

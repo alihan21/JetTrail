@@ -13,11 +13,11 @@ class StatisticsAndPhaseTest {
             RawFlightSample(3_000, null, null, null, null, null, null),
         )
         val stats = FlightStatisticsCalculator.calculate(FlightProcessor().processAll(raw))
-        assertEquals(3, stats.acceptedSamples) // dropout is valid retained data, not a fabricated fix
+        assertEquals(2, stats.acceptedSamples)
         assertEquals(1, stats.rejectedSamples)
         assertEquals(110.0, stats.maximumGroundSpeedMps!!, 0.0)
         assertTrue(stats.distanceM in 50.0..60.0)
-        assertEquals(.75, stats.gpsCoverageFraction, 0.0)
+        assertEquals(.5, stats.gpsCoverageFraction, 0.0)
         assertEquals(3_000L, stats.durationMillis)
     }
 

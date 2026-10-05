@@ -11,13 +11,11 @@ class FlightProcessorTest {
     @Test fun impossibleJumpIsExcludedButRawIsRetained() {
         val processor = FlightProcessor()
         assertTrue(processor.process(sample(1_000)).acceptedForStatistics)
-        val impossible = sample(2_000, lat = -60.0, lon = 140.0, speed = 900.0, altitude = 40_000.0)
+        val impossible = sample(2_000, lat = 55.0, lon = 30.0, speed = 200.0, altitude = 10_000.0)
         val result = processor.process(impossible)
         assertFalse(result.acceptedForStatistics)
         assertSame(impossible, result.raw)
-        assertTrue(SampleRejection.INVALID_SPEED in result.rejectionReasons)
         assertTrue(SampleRejection.IMPOSSIBLE_POSITION_JUMP in result.rejectionReasons)
-        assertTrue(SampleRejection.IMPOSSIBLE_ALTITUDE in result.rejectionReasons)
     }
 
     @Test fun gpsDropoutIsCoverageLossNotInventedOutlier() {
@@ -53,6 +51,41 @@ class FlightProcessorTest {
 
         val continuedClimb = processor.process(sample(21_000, altitude = 1_200.0))
         assertEquals(10.0, continuedClimb.verticalSpeedMps!!, 1e-9)
+    }
+
+    @Test fun verticalSpeedUsesTrendInsteadOfFlippingWithAltitudeNoise() {
+        val processor = FlightProcessor()
+        processor.process(sample(1_000, altitude = 1_000.0))
+        val estimates = listOf(
+            processor.process(sample(6_000, altitude = 1_047.0)).verticalSpeedMps,
+            processor.process(sample(11_000, altitude = 1_104.0)).verticalSpeedMps,
+            processor.process(sample(16_000, altitude = 1_148.0)).verticalSpeedMps,
+            processor.process(sample(21_000, altitude = 1_203.0)).verticalSpeedMps,
+        )
+
+        assertTrue(estimates.filterNotNull().all { it > 0.0 })
+        assertEquals(10.0, estimates.last()!!, 0.5)
+    }
+
+    @Test fun firstFixAfterLongOutageIsQuarantinedUntilConfirmed() {
+        val processor = FlightProcessor()
+        assertTrue(processor.process(sample(1_000, lat = 50.0, lon = 4.0)).acceptedForStatistics)
+
+        val tentative = processor.process(sample(61_000, lat = 48.0, lon = 2.0))
+        assertFalse(tentative.acceptedForStatistics)
+        assertTrue(SampleRejection.UNCONFIRMED_REACQUISITION in tentative.rejectionReasons)
+
+        val confirmed = processor.process(sample(62_000, lat = 48.001, lon = 2.002))
+        assertTrue(confirmed.acceptedForStatistics)
+        assertTrue(confirmed.startsNewSegment)
+        assertNotNull(confirmed.distanceFromPreviousM)
+    }
+
+    @Test fun nullIslandAndNonEuropeanFixesCannotDistortEuropeanRoute() {
+        val processor = FlightProcessor()
+        val nullIsland = processor.process(sample(1_000, lat = 0.0, lon = 0.0))
+        assertFalse(nullIsland.acceptedForStatistics)
+        assertTrue(SampleRejection.OUTSIDE_SUPPORTED_REGION in nullIsland.rejectionReasons)
     }
 
     @Test fun pressureAltitudeIsCabinEstimateAndHandlesInvalidInput() {

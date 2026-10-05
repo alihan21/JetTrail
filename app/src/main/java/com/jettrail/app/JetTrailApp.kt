@@ -34,10 +34,8 @@ import com.jettrail.app.ui.JetTrailTheme
 import com.jettrail.app.ui.LiveDashboard
 import com.jettrail.app.ui.LiveUiState
 import com.jettrail.app.ui.LogbookScreen
-import com.jettrail.app.ui.SimulationLabScreen
 import com.jettrail.app.ui.ValueConfidence
 import com.jettrail.app.ui.InstrumentValue
-import com.jettrail.app.ui.SimulationUiState
 import com.jettrail.app.ui.demoFlights
 import com.jettrail.app.ui.demoRoute
 
@@ -49,8 +47,6 @@ data class JetTrailCallbacks(
     val onBatterySettings: () -> Unit = {},
     val onCorrectAirports: (Long, String?, String?) -> Unit = { _, _, _ -> },
     val onDeleteFlight: (Long) -> Unit = {},
-    val onStartSimulation: (speed: Float, dropouts: Boolean, outliers: Boolean) -> Unit = { _, _, _ -> },
-    val onStopSimulation: () -> Unit = {}
 )
 
 @Composable
@@ -58,7 +54,6 @@ fun JetTrailApp(
     liveState: LiveUiState = previewLiveState,
     flights: List<FlightSummary> = demoFlights,
     explorerState: ExplorerUiState = ExplorerUiState(),
-    simulationState: SimulationUiState = SimulationUiState(),
     callbacks: JetTrailCallbacks = JetTrailCallbacks()
 ) {
     var theme by remember { mutableStateOf(CabinTheme.DARK) }
@@ -87,8 +82,7 @@ fun JetTrailApp(
                         ThemeToggle(theme) { theme = it }
                     }
                     Box(Modifier.weight(1f).fillMaxSize()) {
-                        AppContent(selectedSection, liveState, flights, selectedFlight, { selectedFlight = it }, { selectedFlight = null }, explorerState, simulationState,
-                            onSimStart = callbacks.onStartSimulation, onSimStop = callbacks.onStopSimulation, callbacks = callbacks)
+                        AppContent(selectedSection, liveState, flights, selectedFlight, { selectedFlight = it }, { selectedFlight = null }, explorerState, callbacks)
                     }
                 }
             } else {
@@ -114,8 +108,7 @@ fun JetTrailApp(
                     }
                 ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
-                        AppContent(selectedSection, liveState, flights, selectedFlight, { selectedFlight = it }, { selectedFlight = null }, explorerState, simulationState,
-                            onSimStart = callbacks.onStartSimulation, onSimStop = callbacks.onStopSimulation, callbacks = callbacks)
+                        AppContent(selectedSection, liveState, flights, selectedFlight, { selectedFlight = it }, { selectedFlight = null }, explorerState, callbacks)
                     }
                 }
             }
@@ -132,16 +125,12 @@ private fun AppContent(
     onSelectFlight: (FlightSummary) -> Unit,
     onBack: () -> Unit,
     explorerState: ExplorerUiState,
-    simulationState: SimulationUiState,
-    onSimStart: (Float, Boolean, Boolean) -> Unit,
-    onSimStop: () -> Unit,
     callbacks: JetTrailCallbacks
 ) {
     when (section) {
         AppSection.LIVE -> LiveDashboard(liveState, callbacks.onStartFlight, callbacks.onEndFlight, callbacks.onLocationSettings, callbacks.onPermissionRequest, callbacks.onBatterySettings)
         AppSection.LOGBOOK -> LogbookScreen(flights, selectedFlight, onSelectFlight, onBack, callbacks.onCorrectAirports, callbacks.onDeleteFlight)
         AppSection.EXPLORER -> ExplorerScreen(explorerState)
-        AppSection.LAB -> SimulationLabScreen(simulationState.running, simulationState.progress, onSimStart, onSimStop)
     }
 }
 
@@ -173,7 +162,7 @@ private val previewLiveState = LiveUiState(
     instruments = listOf(
         InstrumentValue("842", "km/h", "Ground speed", ValueConfidence.MEASURED),
         InstrumentValue("10,940", "m", "GPS altitude", ValueConfidence.MEASURED, "GNSS ±18 m"),
-        InstrumentValue("+12", "m/min", "Vertical speed", ValueConfidence.ESTIMATED, "30 s trend"),
+        InstrumentValue("+12", "m/min", "Vertical speed", ValueConfidence.ESTIMATED, "20 s trend"),
         InstrumentValue("287", "° WNW", "Track", ValueConfidence.MEASURED, "direction over ground")
     ),
     accuracyMetres = 18,

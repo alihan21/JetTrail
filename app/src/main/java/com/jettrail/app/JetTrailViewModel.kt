@@ -6,12 +6,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jettrail.app.data.FlightEntity
 import com.jettrail.app.data.toDomain
-import com.jettrail.app.data.toEntity
 import com.jettrail.app.domain.FlightProcessor
 import com.jettrail.app.domain.ProcessedFlightSample
-import com.jettrail.app.domain.FlightSimulator
 import com.jettrail.app.domain.FlightStatisticsCalculator
-import com.jettrail.app.domain.SimulationScenario
 import com.jettrail.app.recording.RecordingController
 import com.jettrail.app.recording.RecordingEnvironment
 import com.jettrail.app.recording.RecordingRuntime
@@ -26,12 +23,9 @@ import com.jettrail.app.ui.LiveUiState
 import com.jettrail.app.ui.TrackPoint
 import com.jettrail.app.ui.ValueConfidence
 import com.jettrail.app.ui.BadgeUi
-import com.jettrail.app.ui.SimulationUiState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -56,15 +50,13 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
     private var liveLongestDropoutSamples = 0
     private var liveCurrentDropoutSamples = 0
     private var recoveredFlightId: Long? = null
-    private var simulationJob: Job? = null
-    private var simulationFlightId: Long? = null
-    private val _simulation = MutableStateFlow(SimulationUiState())
-    val simulation: StateFlow<SimulationUiState> = _simulation.asStateFlow()
-
     val flights: StateFlow<List<FlightSummary>> = dao.observeFlights().map { rows ->
         rows.mapNotNull { flight ->
-            val samples = dao.getSamples(flight.id).map { it.toDomain() }
-            if (samples.isEmpty()) return@mapNotNull null
+            if (flight.isSimulation || flight.status != "COMPLETED") return@mapNotNull null
+            val storedSamples = dao.getSamples(flight.id).map { it.toDomain() }
+            if (storedSamples.isEmpty()) return@mapNotNull null
+            // Always reprocess raw evidence so filtering improvements repair old flights too.
+            val samples = FlightProcessor().processAll(storedSamples.map { it.raw })
             val stats = FlightStatisticsCalculator.calculate(samples)
             FlightSummary(
                 id = flight.id,
@@ -77,37 +69,69 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
                 maxGpsAltitudeM = (stats.maximumGpsAltitudeM ?: 0.0).roundToInt(),
                 averageSpeedKmh = ((stats.averageGroundSpeedMps ?: 0.0) * 3.6).roundToInt(),
                 qualityPercent = (stats.gpsCoverageFraction * 100).roundToInt(),
-                phases = stats.phaseDurationsMillis.entries.joinToString(" • ") { "${it.key.name.lowercase().replaceFirstChar(Char::uppercase)} ${formatDuration(it.value)}" },
-                route = samples.filter { it.acceptedForStatistics }.mapNotNull { s ->
-                    s.raw.latitudeDeg?.let { lat -> s.raw.longitudeDeg?.let { TrackPoint(lat, it) } }
+                phases = stats.phaseDurationsMillis
+                    .filterKeys { it != com.jettrail.app.domain.FlightPhase.UNKNOWN }
+                    .entries
+                    .joinToString(" • ") { "${it.key.name.lowercase().replaceFirstChar(Char::uppercase)} ${formatDuration(it.value)}" }
+                    .ifBlank { "Phase data unavailable" },
+                route = samples.filter { it.acceptedForStatistics && it.raw.isNewLocationFix }.mapNotNull { s ->
+                    s.raw.latitudeDeg?.let { lat ->
+                        s.raw.longitudeDeg?.let { TrackPoint(lat, it, s.startsNewSegment) }
+                    }
                 },
-                speedSeries = samples.mapNotNull { it.raw.groundSpeedMps?.times(3.6)?.toFloat() },
-                altitudeSeries = samples.mapNotNull { it.raw.gpsAltitudeM?.toFloat() },
-                isSimulation = flight.isSimulation,
+                speedSeries = samples.map { sample ->
+                    sample.raw.groundSpeedMps?.times(3.6)?.toFloat()
+                        ?.takeIf { sample.acceptedForStatistics }
+                },
+                altitudeSeries = samples.map { sample ->
+                    sample.raw.gpsAltitudeM?.toFloat()
+                        ?.takeIf { sample.acceptedForStatistics }
+                },
+                isSimulation = false,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val explorer: StateFlow<ExplorerUiState> = flights.map { all ->
-        val list = all.filterNot { it.isSimulation }
+        val list = all
         val airportCodes = list.flatMap { listOf(it.origin, it.destination) }.filter { it != "—" }.toSet()
+        val airportVisitCounts = list.flatMap { listOf(it.origin, it.destination) }
+            .filter { it != "—" }
+            .groupingBy { it }
+            .eachCount()
+        val mostAirportVisits = airportVisitCounts.values.maxOrNull() ?: 0
         val countryByCode = app.airports.flatMap { airport -> listOfNotNull(airport.ident to airport.countryCode, airport.iataCode?.let { it to airport.countryCode }) }.toMap()
         val countries = airportCodes.mapNotNull(countryByCode::get).toSet()
-        val routes = list.mapNotNull { if (it.origin == "—" || it.destination == "—") null else listOf(it.origin, it.destination).sorted().joinToString("-") }.toSet()
-        val xp = list.sumOf { 100 + (it.distanceKm / 100).coerceAtMost(100) + if (it.qualityPercent >= 80) 25 else 0 }
-        val unlocked = buildSet {
-            if (list.isNotEmpty()) add("First lift-off")
-            if (countries.size >= 5) add("Five countries")
-            if (airportCodes.size >= 10) add("Airport collector")
-            if (list.any { it.distanceKm >= 5_000 }) add("Long haul")
-            if (list.any { it.qualityPercent >= 95 }) add("Clean signal")
+        val routeKeys = list.mapNotNull {
+            if (it.origin == "—" || it.destination == "—") null
+            else listOf(it.origin, it.destination).sorted().joinToString("-")
         }
+        val routes = routeKeys.toSet()
+        val mostRouteTrips = routeKeys.groupingBy { it }.eachCount().values.maxOrNull() ?: 0
+        val totalDistanceKm = list.sumOf { it.distanceKm }
+        val flightMilestoneBonus = listOf(5, 10, 15, 20).count { list.size >= it } * 100
+        val xp = list.sumOf { 100 + (it.distanceKm / 100).coerceAtMost(100) + if (it.qualityPercent >= 80) 25 else 0 } + flightMilestoneBonus
         val badges = listOf(
-            BadgeUi("First lift-off", "Record a complete real flight", "First lift-off" in unlocked, "01"),
-            BadgeUi("Clean signal", "Reach 95% GNSS coverage", "Clean signal" in unlocked, "◎"),
-            BadgeUi("Five countries", "Visit five countries", "Five countries" in unlocked, "05"),
-            BadgeUi("Airport collector", "Visit ten airports", "Airport collector" in unlocked, "10"),
-            BadgeUi("Long haul", "Record a real flight over 5,000 km", "Long haul" in unlocked, "∞"),
+            BadgeUi("First lift-off", "Complete your first flight", list.isNotEmpty(), "01"),
+            BadgeUi("Five flights", "Complete 5 flights", list.size >= 5, "05"),
+            BadgeUi("Frequent flyer", "Complete 10 flights", list.size >= 10, "10"),
+            BadgeUi("Seasoned traveller", "Complete 15 flights", list.size >= 15, "15"),
+            BadgeUi("Twenty airborne", "Complete 20 flights", list.size >= 20, "20"),
+            BadgeUi("Familiar terminal", "Use the same airport 3 times", mostAirportVisits >= 3, "A3"),
+            BadgeUi("Airport regular", "Use the same airport 5 times", mostAirportVisits >= 5, "A5"),
+            BadgeUi("Home terminal", "Use the same airport 10 times", mostAirportVisits >= 10, "A10"),
+            BadgeUi("Airport explorer", "Visit 5 unique airports", airportCodes.size >= 5, "AP"),
+            BadgeUi("Airport collector", "Visit 10 unique airports", airportCodes.size >= 10, "10"),
+            BadgeUi("Country hopper", "Visit 3 countries", countries.size >= 3, "C3"),
+            BadgeUi("Five countries", "Visit 5 countries", countries.size >= 5, "C5"),
+            BadgeUi("Route replay", "Fly the same route 3 times", mostRouteTrips >= 3, "R3"),
+            BadgeUi("Route veteran", "Fly the same route 5 times", mostRouteTrips >= 5, "R5"),
+            BadgeUi("Continental miles", "Record 5,000 total kilometres", totalDistanceKm >= 5_000, "5K"),
+            BadgeUi("Ten-thousand club", "Record 10,000 total kilometres", totalDistanceKm >= 10_000, "10K"),
+            BadgeUi("High flyer", "Reach 10,000 m GPS altitude", list.any { it.maxGpsAltitudeM >= 10_000 }, "HI"),
+            BadgeUi("Jet pace", "Reach 800 km/h ground speed", list.any { it.maxSpeedKmh >= 800 }, "JP"),
+            BadgeUi("Clean signal", "Finish a flight with 90% GNSS coverage", list.any { it.qualityPercent >= 90 }, "◎"),
+            BadgeUi("Thousand-km hop", "Complete a flight over 1,000 km", list.any { it.distanceKm >= 1_000 }, "1K"),
         )
         val level = 1 + xp / 500
         ExplorerUiState(level = level, title = when { level >= 10 -> "Jetstream Cartographer"; level >= 5 -> "Stratosphere Scout"; level >= 2 -> "Runway Rover"; else -> "New Explorer" },
@@ -187,39 +211,6 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
 
     fun deleteFlight(flightId: Long) = viewModelScope.launch { dao.deleteFlightById(flightId) }
 
-    fun startSimulation(speed: Float, dropouts: Boolean, outliers: Boolean) {
-        simulationJob?.cancel()
-        simulationJob = viewModelScope.launch {
-            _simulation.value = SimulationUiState(running = true, progress = 0f)
-            liveProcessor.reset(); liveRoute.clear(); liveStartedAt = System.currentTimeMillis()
-            val id = dao.insertFlight(FlightEntity(startedAtMillis = liveStartedAt, isSimulation = true, title = "Simulation Lab", inferredOriginIdent = "BRU", inferredDestinationIdent = "LHR"))
-            simulationFlightId = id
-            val processor = FlightProcessor()
-            val count = 181
-            FlightSimulator.generate(SimulationScenario(seed = 7, sampleCount = count)).forEachIndexed { index, raw ->
-                var adjusted = raw
-                if (!dropouts && raw.latitudeDeg == null) adjusted = raw.copy(latitudeDeg = 51.2, longitudeDeg = 2.0)
-                if (!outliers && (raw.groundSpeedMps ?: 0.0) > 500) adjusted = raw.copy(groundSpeedMps = 240.0, latitudeDeg = 51.2, longitudeDeg = 2.0, gpsAltitudeM = 10_000.0)
-                val processed = processor.process(adjusted)
-                dao.insertSample(processed.toEntity(id))
-                updateLiveDomain(processed)
-                _simulation.value = SimulationUiState(true, (index + 1f) / count)
-                delay((10_000 / speed.coerceIn(5f, 120f)).toLong())
-            }
-            dao.finishRecording(id, System.currentTimeMillis())
-            _live.value = _live.value.copy(isRecording = false, flightPhase = "Simulation complete")
-            _simulation.value = SimulationUiState(running = false, progress = 1f)
-            simulationFlightId = null
-        }
-    }
-
-    fun stopSimulation() {
-        simulationJob?.cancel(); simulationJob = null
-        simulationFlightId?.let { id -> viewModelScope.launch { dao.deleteFlightById(id) } }
-        simulationFlightId = null
-        _simulation.value = SimulationUiState(); _live.value = _live.value.copy(isRecording = false)
-    }
-
     private fun updateLive(sample: RecordingSample) {
         val processed = liveProcessor.process(sample.toDomainRawSample())
         updateLiveDomain(processed)
@@ -230,23 +221,23 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
     ) {
         val flight = knownFlight ?: dao.findRecoverableRecording(recoverableCutoffMillis()) ?: return
         val sampleEntities = dao.getSamples(flight.id)
-        val samples = sampleEntities.map { it.toDomain() }
+        val storedSamples = sampleEntities.map { it.toDomain() }
         recoveredFlightId = flight.id
         resetLiveRecordingState()
         liveStartedAt = flight.startedAtMillis
-        if (samples.isEmpty()) {
+        if (storedSamples.isEmpty()) {
             _live.value = _live.value.copy(isRecording = true, elapsed = formatDuration(System.currentTimeMillis() - flight.startedAtMillis))
             return
         }
-        liveProcessor.processAll(samples.map { it.raw })
+        val samples = liveProcessor.processAll(storedSamples.map { it.raw })
         val stats = FlightStatisticsCalculator.calculate(samples)
         liveDistanceM = stats.distanceM
         liveMaxSpeedMps = stats.maximumGroundSpeedMps
         liveMaxAltitudeM = stats.maximumGpsAltitudeM
-        samples.filter { it.acceptedForStatistics }.mapNotNullTo(liveRoute) { sample ->
+        samples.filter { it.acceptedForStatistics && it.raw.isNewLocationFix }.mapNotNullTo(liveRoute) { sample ->
             val lat = sample.raw.latitudeDeg
             val lon = sample.raw.longitudeDeg
-            if (lat != null && lon != null) TrackPoint(lat, lon) else null
+            if (lat != null && lon != null) TrackPoint(lat, lon, sample.startsNewSegment) else null
         }
         var currentDropout = 0
         samples.forEach { sample ->
@@ -285,7 +276,6 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
             rawSamples = samples.size,
             acceptedSamples = stats.acceptedSamples,
             rejectedSamples = stats.rejectedSamples,
-            averageSpeed = stats.averageGroundSpeedMps?.let { "${(it * 3.6).roundToInt()} km/h" } ?: "—",
             maxSpeed = liveMaxSpeedMps?.let { "${(it * 3.6).roundToInt()} km/h" } ?: "—",
             maxAltitude = liveMaxAltitudeM?.let { "${it.roundToInt()} m" } ?: "—",
             signalStatus = if (latest.raw.latitudeDeg == null) "GNSS unavailable • holding last values" else signalStatus((stats.gpsCoverageFraction * 100).roundToInt()),
@@ -296,7 +286,9 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
     private fun updateLiveDomain(processed: ProcessedFlightSample) {
         val raw = processed.raw
         if (processed.acceptedForStatistics && raw.latitudeDeg != null && raw.longitudeDeg != null) {
-            liveRoute.addLast(TrackPoint(raw.latitudeDeg, raw.longitudeDeg))
+            if (raw.isNewLocationFix) {
+                liveRoute.addLast(TrackPoint(raw.latitudeDeg, raw.longitudeDeg, processed.startsNewSegment))
+            }
         }
         if (processed.acceptedForStatistics) {
             liveDistanceM += processed.distanceFromPreviousM ?: 0.0
@@ -312,7 +304,9 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
         val current = _live.value
         val rawCount = current.rawSamples + 1
         val elapsed = if (liveStartedAt == 0L) 0 else (System.currentTimeMillis() - liveStartedAt).coerceAtLeast(0)
-        val coverage = (((current.coveragePercent * (rawCount - 1)) + if (raw.latitudeDeg != null) 100 else 0) / rawCount)
+        val validFreshFix = processed.acceptedForStatistics && raw.isNewLocationFix &&
+            raw.latitudeDeg != null && raw.longitudeDeg != null
+        val coverage = (((current.coveragePercent * (rawCount - 1)) + if (validFreshFix) 100 else 0) / rawCount)
         val hasLiveGnss = raw.latitudeDeg != null || raw.groundSpeedMps != null || raw.gpsAltitudeM != null
         _live.value = current.copy(
             isRecording = true,
@@ -328,9 +322,8 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
             cabinAltitude = raw.estimatedCabinAltitudeM?.let { "${it.roundToInt()} m cabin pressure altitude" } ?: current.cabinAltitude,
             turbulence = raw.linearAccelerationRmsMps2?.let { formatPhoneMotion(it) } ?: current.turbulence,
             rawSamples = rawCount,
-            acceptedSamples = current.acceptedSamples + if (processed.acceptedForStatistics) 1 else 0,
-            rejectedSamples = current.rejectedSamples + if (processed.acceptedForStatistics) 0 else 1,
-            averageSpeed = raw.groundSpeedMps?.let { "${(it * 3.6).roundToInt()} km/h now" } ?: current.averageSpeed,
+            acceptedSamples = current.acceptedSamples + if (validFreshFix) 1 else 0,
+            rejectedSamples = current.rejectedSamples + if (processed.rejectionReasons.isNotEmpty()) 1 else 0,
             maxSpeed = liveMaxSpeedMps?.let { "${(it * 3.6).roundToInt()} km/h" } ?: "—",
             maxAltitude = liveMaxAltitudeM?.let { "${it.roundToInt()} m" } ?: "—",
             signalStatus = if (hasLiveGnss) signalStatus(coverage) else "GNSS unavailable • holding last values",
@@ -361,7 +354,9 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
             trackInstrument(raw.bearingDeg),
         )
         return current.mapIndexed { index, value ->
-            if (value.confidence != ValueConfidence.UNAVAILABLE) value
+            // A stale climb/descent is misleading. Other instruments may hold their last value,
+            // clearly marked estimated, while a new vertical trend is being established.
+            if (value.confidence != ValueConfidence.UNAVAILABLE || index == VERTICAL_SPEED_INDEX) value
             else previous.getOrNull(index)?.takeIf { it.confidence != ValueConfidence.UNAVAILABLE }
                 ?.copy(confidence = ValueConfidence.ESTIMATED, hint = "last valid GNSS value")
                 ?: value
@@ -410,11 +405,12 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun finishRecordingFromDatabase(flightId: Long, endedAtMillis: Long) {
         val flight = dao.getFlight(flightId) ?: return
-        val samples = dao.getSamples(flightId).map { it.toDomain() }
-        if (samples.isEmpty()) {
+        val storedSamples = dao.getSamples(flightId).map { it.toDomain() }
+        if (storedSamples.isEmpty()) {
             dao.finishRecording(flightId, endedAtMillis, "ABORTED")
             return
         }
+        val samples = FlightProcessor().processAll(storedSamples.map { it.raw })
         val stats = FlightStatisticsCalculator.calculate(samples)
         val (origin, destination) = com.jettrail.app.domain.AirportInferenceEngine.inferRoute(samples, app.airports)
         dao.updateFlight(flight.copy(
@@ -441,6 +437,7 @@ class JetTrailViewModel(application: Application) : AndroidViewModel(application
 
     companion object {
         private const val MAX_RECOVERABLE_RECORDING_AGE_MILLIS = 18L * 60L * 60L * 1000L
+        private const val VERTICAL_SPEED_INDEX = 2
 
         fun formatDuration(ms: Long): String {
             val seconds = ms / 1000

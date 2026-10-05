@@ -4,7 +4,7 @@ JetTrail is a private, account-free Android flight logger for a Galaxy Z Fold4. 
 
 ## Open and run
 
-1. Open `D:\JetTrail` in Android Studio.
+1. Open `P:\JetTrail` in Android Studio.
 2. Let Gradle sync, connect the phone by USB, enable Developer options and USB debugging, and approve the phone's RSA prompt.
 3. Choose the Fold4 in the device selector and click **Run**. Android Studio builds and installs the local debug app automatically.
 
@@ -17,10 +17,6 @@ The project targets API 35 and runs on Android 16. It uses Kotlin, Compose, Room
 - Tap **Start Flight while JetTrail is visible**. Android requires this user action before the location foreground service can continue under the lock screen.
 - Keep the persistent JetTrail notification enabled. Samsung battery saver/location power modes can reduce updates; JetTrail displays a warning when detected.
 - Put the phone securely away during takeoff and landing. XP and badges never require interaction during critical phases.
-
-## Simulation Lab
-
-Open **Simulation Lab**, choose compression and whether to include dropouts/outliers, then start. It injects deterministic taxi, ascent, high-speed cruise, descent, noisy GNSS, gaps, turbulence, and impossible spikes through the same filter and Room persistence path used for real samples. The resulting session appears in Logbook and is marked as a simulation internally.
 
 ## Offline data and privacy
 
@@ -40,4 +36,4 @@ Open **Simulation Lab**, choose compression and whether to include dropouts/outl
 
 ## Verification
 
-Run `gradlew.bat testDebugUnitTest assembleDebug` from Android Studio's terminal. Domain tests cover geodesy/filtering, statistics and phases, airport inference/gamification, persistence mapping, deterministic simulation, dropouts, and outliers.
+Run `gradlew.bat testDebugUnitTest assembleDebug` from Android Studio's terminal. Domain tests cover geodesy/filtering, smoothed vertical speed, statistics and phases, airport inference/gamification, persistence mapping, dropouts, and outliers.

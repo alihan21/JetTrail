@@ -11,7 +11,7 @@ import com.jettrail.app.domain.RawFlightSample
 import com.jettrail.app.domain.ValueProvenance
 
 /**
- * Ready-to-install bridge from platform recording into the same processor used by Simulation Lab.
+ * Bridge from platform recording into the same processor used for stored-flight reprocessing.
  * Create it with the application database DAO and install it in [RecordingRuntime].
  */
 class ProcessingRecordingSink(

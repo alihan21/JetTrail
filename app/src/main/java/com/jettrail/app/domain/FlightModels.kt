@@ -35,6 +35,8 @@ data class ProcessedFlightSample(
     val rejectionReasons: Set<SampleRejection> = emptySet(),
     val distanceFromPreviousM: Double? = null,
     val verticalSpeedMps: Double? = null,
+    /** Starts a new visible route segment after launch or a GNSS outage. */
+    val startsNewSegment: Boolean = false,
     val phase: FlightPhase = FlightPhase.UNKNOWN,
     val turbulence: TurbulenceEstimate = TurbulenceEstimate.UNAVAILABLE,
 )
@@ -42,6 +44,7 @@ data class ProcessedFlightSample(
 enum class SampleRejection {
     INVALID_TIME, INVALID_COORDINATE, POOR_ACCURACY, INVALID_SPEED,
     IMPOSSIBLE_POSITION_JUMP, IMPOSSIBLE_ALTITUDE, INVALID_SENSOR_VALUE,
+    OUTSIDE_SUPPORTED_REGION, UNCONFIRMED_REACQUISITION,
 }
 
 enum class TurbulenceEstimate { UNAVAILABLE, SMOOTH, LIGHT, MODERATE, ROUGH }

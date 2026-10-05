@@ -5,8 +5,7 @@ import androidx.compose.runtime.Immutable
 enum class AppSection(val label: String, val shortLabel: String) {
     LIVE("Live", "LIVE"),
     LOGBOOK("Logbook", "LOG"),
-    EXPLORER("Explorer", "XP"),
-    LAB("Simulation Lab", "LAB")
+    EXPLORER("Explorer", "XP")
 }
 
 enum class CabinTheme { DARK, RED_AMBER }
@@ -14,7 +13,11 @@ enum class CabinTheme { DARK, RED_AMBER }
 enum class ValueConfidence { MEASURED, ESTIMATED, UNAVAILABLE }
 
 @Immutable
-data class TrackPoint(val latitude: Double, val longitude: Double)
+data class TrackPoint(
+    val latitude: Double,
+    val longitude: Double,
+    val startsNewSegment: Boolean = false,
+)
 
 @Immutable
 data class InstrumentValue(
@@ -51,7 +54,6 @@ data class LiveUiState(
     val turbulence: String = "Waiting for motion samples",
     val rawSamples: Int = 0,
     val acceptedSamples: Int = 0,
-    val averageSpeed: String = "—",
     val maxSpeed: String = "—",
     val maxAltitude: String = "—",
     val signalStatus: String = "Waiting for GNSS",
@@ -73,8 +75,9 @@ data class FlightSummary(
     val qualityPercent: Int,
     val phases: String,
     val route: List<TrackPoint>,
-    val speedSeries: List<Float>,
-    val altitudeSeries: List<Float>,
+    /** Null entries are real gaps and must not be joined by the chart. */
+    val speedSeries: List<Float?>,
+    val altitudeSeries: List<Float?>,
     val isSimulation: Boolean = false,
 )
 
@@ -97,9 +100,6 @@ data class ExplorerUiState(
 
 @Immutable
 data class BadgeUi(val name: String, val description: String, val unlocked: Boolean, val glyph: String)
-
-@Immutable
-data class SimulationUiState(val running: Boolean = false, val progress: Float = 0f)
 
 val demoRoute = listOf(
     TrackPoint(50.901, 4.484), TrackPoint(51.1, 3.7), TrackPoint(51.3, 2.4),

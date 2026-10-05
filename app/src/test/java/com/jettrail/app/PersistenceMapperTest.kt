@@ -13,8 +13,13 @@ class PersistenceMapperTest {
             800.0, 2_000.0, 1.2, ValueProvenance.SIMULATED, ValueProvenance.SIMULATED, true,
         )
         val original = ProcessedFlightSample(
-            raw, false, setOf(SampleRejection.POOR_ACCURACY, SampleRejection.INVALID_SPEED),
-            42.0, 3.0, FlightPhase.CLIMB, TurbulenceEstimate.MODERATE,
+            raw = raw,
+            acceptedForStatistics = false,
+            rejectionReasons = setOf(SampleRejection.POOR_ACCURACY, SampleRejection.INVALID_SPEED),
+            distanceFromPreviousM = 42.0,
+            verticalSpeedMps = 3.0,
+            phase = FlightPhase.CLIMB,
+            turbulence = TurbulenceEstimate.MODERATE,
         )
         val restored = original.toEntity(99).toDomain()
         assertEquals(original, restored)

@@ -25,14 +25,13 @@ class MainActivity : ComponentActivity() {
             val live by viewModel.live.collectAsStateWithLifecycle()
             val flights by viewModel.flights.collectAsStateWithLifecycle()
             val explorer by viewModel.explorer.collectAsStateWithLifecycle()
-            val simulation by viewModel.simulation.collectAsStateWithLifecycle()
             val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
                 viewModel.refreshEnvironment()
                 if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                     viewModel.startFlight(this)
                 }
             }
-            JetTrailApp(live, flights, explorer, simulation, JetTrailCallbacks(
+            JetTrailApp(live, flights, explorer, JetTrailCallbacks(
                 onStartFlight = {
                     val missingPermissions = buildList {
                         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -52,8 +51,6 @@ class MainActivity : ComponentActivity() {
                 onBatterySettings = { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
                 onCorrectAirports = viewModel::correctAirports,
                 onDeleteFlight = viewModel::deleteFlight,
-                onStartSimulation = viewModel::startSimulation,
-                onStopSimulation = viewModel::stopSimulation,
             ))
         }
     }
